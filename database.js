@@ -15,9 +15,6 @@ function initializeDatabase() {
                 email TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
                 avatar TEXT,
-                banner_url TEXT,
-                has_nitro BOOLEAN DEFAULT 0,
-                nitro_expires_at DATETIME,
                 status TEXT DEFAULT 'Online',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -159,7 +156,7 @@ const userDB = {
 
     findById: (id) => {
         return new Promise((resolve, reject) => {
-            const sql = 'SELECT * FROM users WHERE id = ?';
+            const sql = 'SELECT id, username, email, avatar, status FROM users WHERE id = ?';
             db.get(sql, [id], (err, row) => {
                 if (err) reject(err);
                 else resolve(row);
@@ -179,92 +176,8 @@ const userDB = {
 
     getAll: () => {
         return new Promise((resolve, reject) => {
-            const sql = 'SELECT id, username, email, avatar, banner_url, has_nitro, status FROM users';
+            const sql = 'SELECT id, username, email, avatar, status FROM users';
             db.all(sql, [], (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
-    },
-
-    updateAvatar: (id, avatarUrl) => {
-        return new Promise((resolve, reject) => {
-            const sql = 'UPDATE users SET avatar = ? WHERE id = ?';
-            db.run(sql, [avatarUrl, id], function(err) {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
-    },
-
-    updateBanner: (id, bannerUrl) => {
-        return new Promise((resolve, reject) => {
-            const sql = 'UPDATE users SET banner_url = ? WHERE id = ?';
-            db.run(sql, [bannerUrl, id], function(err) {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
-    },
-
-    updateNitro: (id, hasNitro, expiresAt) => {
-        return new Promise((resolve, reject) => {
-            const sql = 'UPDATE users SET has_nitro = ?, nitro_expires_at = ? WHERE id = ?';
-            db.run(sql, [hasNitro, expiresAt, id], function(err) {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
-    }
-};
-
-// Server operations
-const serverDB = {
-    create: (name, ownerId) => {
-        return new Promise((resolve, reject) => {
-            const icon = name.charAt(0).toUpperCase();
-            const sql = 'INSERT INTO servers (name, icon, owner_id) VALUES (?, ?, ?)';
-            db.run(sql, [name, icon, ownerId], function(err) {
-                if (err) reject(err);
-                else resolve({ id: this.lastID, name, icon, ownerId });
-            });
-        });
-    },
-
-    getUserServers: (userId) => {
-        return new Promise((resolve, reject) => {
-            const sql = `
-                SELECT s.* FROM servers s
-                JOIN server_members sm ON s.id = sm.server_id
-                WHERE sm.user_id = ?
-                ORDER BY s.created_at ASC
-            `;
-            db.all(sql, [userId], (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
-    },
-
-    addMember: (serverId, userId) => {
-        return new Promise((resolve, reject) => {
-            const sql = 'INSERT OR IGNORE INTO server_members (server_id, user_id) VALUES (?, ?)';
-            db.run(sql, [serverId, userId], function(err) {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
-    },
-
-    getMembers: (serverId) => {
-        return new Promise((resolve, reject) => {
-            const sql = `
-                SELECT u.id, u.username, u.avatar, u.status, u.has_nitro
-                FROM users u
-                JOIN server_members sm ON u.id = sm.user_id
-                WHERE sm.server_id = ?
-            `;
-            db.all(sql, [serverId], (err, rows) => {
                 if (err) reject(err);
                 else resolve(rows);
             });
@@ -330,6 +243,16 @@ const dmDB = {
                 else resolve(rows.reverse());
             });
         });
+    },
+
+    markAsRead: (messageId) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'UPDATE direct_messages SET read = 1 WHERE id = ?';
+            db.run(sql, [messageId], (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
     }
 };
 
@@ -341,6 +264,22 @@ const fileDB = {
             db.run(sql, [filename, filepath, filetype, filesize, userId, channelId], function(err) {
                 if (err) reject(err);
                 else resolve({ id: this.lastID, filename, filepath });
+            });
+        });
+    },
+
+    getByChannel: (channelId) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT f.*, u.username 
+                FROM file_uploads f 
+                JOIN users u ON f.user_id = u.id 
+                WHERE f.channel_id = ? 
+                ORDER BY f.created_at DESC
+            `;
+            db.all(sql, [channelId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
             });
         });
     }
@@ -400,11 +339,13 @@ const friendDB = {
     acceptRequest: (userId, friendId) => {
         return new Promise((resolve, reject) => {
             db.serialize(() => {
+                // Update the request status
                 const sql1 = 'UPDATE friends SET status = "accepted" WHERE user_id = ? AND friend_id = ?';
                 db.run(sql1, [friendId, userId], (err) => {
                     if (err) return reject(err);
                 });
 
+                // Create reverse relationship
                 const sql2 = 'INSERT OR IGNORE INTO friends (user_id, friend_id, status) VALUES (?, ?, "accepted")';
                 db.run(sql2, [userId, friendId], function(err) {
                     if (err) reject(err);
@@ -445,7 +386,7 @@ const friendDB = {
     getFriends: (userId) => {
         return new Promise((resolve, reject) => {
             const sql = `
-                SELECT u.id, u.username, u.email, u.avatar, u.status, u.has_nitro, f.status as friendship_status
+                SELECT u.id, u.username, u.email, u.avatar, u.status, f.status as friendship_status
                 FROM friends f
                 JOIN users u ON f.friend_id = u.id
                 WHERE f.user_id = ? AND f.status = 'accepted'
@@ -466,6 +407,70 @@ const friendDB = {
                 WHERE f.friend_id = ? AND f.status = 'pending'
             `;
             db.all(sql, [userId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+    },
+
+    checkFriendship: (userId, friendId) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'SELECT * FROM friends WHERE user_id = ? AND friend_id = ? AND status = "accepted"';
+            db.get(sql, [userId, friendId], (err, row) => {
+                if (err) reject(err);
+                else resolve(!!row);
+            });
+        });
+    }
+};
+
+// Server operations
+const serverDB = {
+    create: (name, ownerId) => {
+        return new Promise((resolve, reject) => {
+            const icon = name.charAt(0).toUpperCase();
+            const sql = 'INSERT INTO servers (name, icon, owner_id) VALUES (?, ?, ?)';
+            db.run(sql, [name, icon, ownerId], function(err) {
+                if (err) reject(err);
+                else resolve({ id: this.lastID, name, icon, ownerId });
+            });
+        });
+    },
+
+    getUserServers: (userId) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT s.* FROM servers s
+                JOIN server_members sm ON s.id = sm.server_id
+                WHERE sm.user_id = ?
+                ORDER BY s.created_at ASC
+            `;
+            db.all(sql, [userId], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+    },
+
+    addMember: (serverId, userId) => {
+        return new Promise((resolve, reject) => {
+            const sql = 'INSERT OR IGNORE INTO server_members (server_id, user_id) VALUES (?, ?)';
+            db.run(sql, [serverId, userId], function(err) {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+    },
+
+    getMembers: (serverId) => {
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT u.id, u.username, u.avatar, u.status
+                FROM users u
+                JOIN server_members sm ON u.id = sm.user_id
+                WHERE sm.server_id = ?
+            `;
+            db.all(sql, [serverId], (err, rows) => {
                 if (err) reject(err);
                 else resolve(rows);
             });

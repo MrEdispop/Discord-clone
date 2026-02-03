@@ -8,7 +8,7 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 
-const { initializeDatabase, userDB, messageDB, dmDB, fileDB, reactionDB, friendDB, serverDB, db } = require('./database');
+const { initializeDatabase, userDB, messageDB, dmDB, fileDB, reactionDB, friendDB, serverDB } = require('./database');
 
 const app = express();
 const server = http.createServer(app);
@@ -21,7 +21,6 @@ const io = socketIO(server, {
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-const ADMIN_EMAILS = ['admin@discord.com', 'test@test.com']; // Админы
 
 // Middleware
 app.use(cors());
@@ -31,7 +30,7 @@ app.use(express.static(path.join(__dirname)));
 // Create uploads directory
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.mkdirSync(uploadsDir);
 }
 app.use('/uploads', express.static(uploadsDir));
 
@@ -42,28 +41,31 @@ const storage = multer.diskStorage({
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(file.originalname);
-        cb(null, uniqueSuffix + ext);
+        cb(null, uniqueSuffix + '-' + file.originalname);
     }
 });
 
 const upload = multer({
     storage: storage,
-    limits: { 
-        fileSize: 100 * 1024 * 1024 // 100MB для всех
-    },
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
     fileFilter: (req, file, cb) => {
+        // Allow all common file types
         const allowedMimeTypes = [
-            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+            'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
             'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'text/plain', 'audio/mpeg', 'audio/mp3', 'video/mp4', 'video/webm', 'video/quicktime',
             'application/zip', 'application/x-rar-compressed'
         ];
         
-        if (allowedMimeTypes.includes(file.mimetype)) {
+        const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.pdf', '.doc', '.docx',
+                                   '.txt', '.mp3', '.mp4', '.webm', '.mov', '.zip', '.rar'];
+        
+        const ext = path.extname(file.originalname).toLowerCase();
+        
+        if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
             cb(null, true);
         } else {
-            cb(new Error('Недопустимый тип файла'), false);
+            cb(null, true); // Allow all files for now, can restrict later
         }
     }
 });
@@ -77,24 +79,19 @@ function authenticateToken(req, res, next) {
     const token = authHeader && authHeader.split(' ')[1];
     
     if (!token) {
-        return res.status(401).json({ error: 'Требуется авторизация' });
+        return res.status(401).json({ error: 'Access denied' });
     }
     
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({ error: 'Неверный токен' });
+            return res.status(403).json({ error: 'Invalid token' });
         }
         req.user = user;
         next();
     });
 }
 
-// Check if user is admin
-function isAdmin(email) {
-    return ADMIN_EMAILS.includes(email);
-}
-
-// ==================== API ROUTES ====================
+// API Routes
 
 // Register
 app.post('/api/register', async (req, res) => {
@@ -102,22 +99,22 @@ app.post('/api/register', async (req, res) => {
         const { username, email, password } = req.body;
         
         if (!username || !email || !password) {
-            return res.status(400).json({ error: 'Все поля обязательны' });
+            return res.status(400).json({ error: 'All fields required' });
         }
         
-        if (password.length < 3) {
-            return res.status(400).json({ error: 'Пароль минимум 3 символа' });
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters' });
         }
         
         const existingUser = await userDB.findByEmail(email);
         if (existingUser) {
-            return res.status(400).json({ error: 'Email уже зарегистрирован' });
+            return res.status(400).json({ error: 'Email already registered' });
         }
         
         const hashedPassword = await bcrypt.hash(password, 10);
         const user = await userDB.create(username, email, hashedPassword);
         
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
         
         res.json({
             token,
@@ -125,14 +122,12 @@ app.post('/api/register', async (req, res) => {
                 id: user.id,
                 username: user.username,
                 email: user.email,
-                avatar: username.charAt(0).toUpperCase(),
-                has_nitro: false,
-                is_admin: isAdmin(email)
+                avatar: username.charAt(0).toUpperCase()
             }
         });
     } catch (error) {
-        console.error('Ошибка регистрации:', error);
-        res.status(500).json({ error: 'Ошибка регистрации' });
+        console.error('Register error:', error);
+        res.status(500).json({ error: 'Registration failed' });
     }
 });
 
@@ -142,20 +137,20 @@ app.post('/api/login', async (req, res) => {
         const { email, password } = req.body;
         
         if (!email || !password) {
-            return res.status(400).json({ error: 'Email и пароль обязательны' });
+            return res.status(400).json({ error: 'Email and password required' });
         }
         
         const user = await userDB.findByEmail(email);
         if (!user) {
-            return res.status(400).json({ error: 'Неверные учетные данные' });
+            return res.status(400).json({ error: 'Invalid credentials' });
         }
         
         const validPassword = await bcrypt.compare(password, user.password);
         if (!validPassword) {
-            return res.status(400).json({ error: 'Неверные учетные данные' });
+            return res.status(400).json({ error: 'Invalid credentials' });
         }
         
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
         
         res.json({
             token,
@@ -163,17 +158,12 @@ app.post('/api/login', async (req, res) => {
                 id: user.id,
                 username: user.username,
                 email: user.email,
-                avatar: user.avatar || user.username.charAt(0).toUpperCase(),
-                banner_url: user.banner_url || null,
-                has_nitro: user.has_nitro || false,
-                nitro_expires_at: user.nitro_expires_at || null,
-                status: user.status || 'Online',
-                is_admin: isAdmin(user.email)
+                avatar: user.avatar || user.username.charAt(0).toUpperCase()
             }
         });
     } catch (error) {
-        console.error('Ошибка входа:', error);
-        res.status(500).json({ error: 'Ошибка входа' });
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Login failed' });
     }
 });
 
@@ -181,321 +171,11 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
         const user = await userDB.findById(req.user.id);
-        user.is_admin = isAdmin(user.email);
         res.json(user);
     } catch (error) {
-        console.error('Ошибка получения профиля:', error);
-        res.status(500).json({ error: 'Ошибка получения профиля' });
+        res.status(500).json({ error: 'Failed to get profile' });
     }
 });
-
-// Update user profile
-app.put('/api/user/profile', authenticateToken, async (req, res) => {
-    try {
-        const { username, status } = req.body;
-        const updates = [];
-        const params = [];
-        
-        if (username && username.trim().length >= 2) {
-            updates.push('username = ?');
-            params.push(username.trim());
-        }
-        
-        if (status && ['Online', 'Idle', 'Do Not Disturb', 'Invisible'].includes(status)) {
-            updates.push('status = ?');
-            params.push(status);
-        }
-        
-        if (updates.length === 0) {
-            return res.status(400).json({ error: 'Нет данных для обновления' });
-        }
-        
-        params.push(req.user.id);
-        const sql = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
-        
-        db.run(sql, params, function(err) {
-            if (err) {
-                console.error('Ошибка обновления профиля:', err);
-                return res.status(500).json({ error: 'Ошибка обновления профиля' });
-            }
-            
-            res.json({ success: true });
-        });
-    } catch (error) {
-        console.error('Ошибка обновления профиля:', error);
-        res.status(500).json({ error: 'Ошибка обновления' });
-    }
-});
-
-// ==================== AVATAR & BANNER ROUTES ====================
-
-// Upload avatar (БЕСПЛАТНО для всех)
-app.post('/api/upload-avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
-    try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'Файл не загружен' });
-        }
-
-        // Разрешить все изображения
-        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-        
-        if (!allowedTypes.includes(req.file.mimetype)) {
-            fs.unlinkSync(req.file.path);
-            return res.status(400).json({ 
-                error: 'Разрешены только JPG, PNG, WebP, GIF' 
-            });
-        }
-
-        // Получить текущего пользователя
-        const user = await userDB.findById(req.user.id);
-        
-        // Удалить старую аватарку если есть
-        if (user.avatar && user.avatar.startsWith('uploads/')) {
-            const oldPath = path.join(__dirname, user.avatar);
-            if (fs.existsSync(oldPath)) {
-                fs.unlinkSync(oldPath);
-            }
-        }
-
-        // Сохранить новую аватарку
-        const avatarPath = `uploads/${req.file.filename}`;
-        await userDB.updateAvatar(req.user.id, avatarPath);
-        
-        res.json({
-            success: true,
-            avatarUrl: `/${avatarPath}`,
-            message: 'Аватарка успешно обновлена!'
-        });
-    } catch (error) {
-        console.error('Ошибка загрузки аватарки:', error);
-        if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
-        }
-        res.status(500).json({ error: 'Ошибка загрузки аватарки' });
-    }
-});
-
-// Upload banner (БЕСПЛАТНО для всех)
-app.post('/api/upload-banner', authenticateToken, upload.single('banner'), async (req, res) => {
-    try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'Файл не загружен' });
-        }
-
-        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-        
-        if (!allowedTypes.includes(req.file.mimetype)) {
-            fs.unlinkSync(req.file.path);
-            return res.status(400).json({ 
-                error: 'Разрешены только JPG, PNG, WebP, GIF' 
-            });
-        }
-
-        // Получить пользователя
-        const user = await userDB.findById(req.user.id);
-        
-        // Удалить старый баннер если есть
-        if (user.banner_url && user.banner_url.startsWith('uploads/')) {
-            const oldPath = path.join(__dirname, user.banner_url);
-            if (fs.existsSync(oldPath)) {
-                fs.unlinkSync(oldPath);
-            }
-        }
-
-        // Сохранить баннер
-        const bannerPath = `uploads/${req.file.filename}`;
-        await userDB.updateBanner(req.user.id, bannerPath);
-        
-        res.json({
-            success: true,
-            bannerUrl: `/${bannerPath}`,
-            message: 'Баннер успешно обновлен!'
-        });
-    } catch (error) {
-        console.error('Ошибка загрузки баннера:', error);
-        if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
-        }
-        res.status(500).json({ error: 'Ошибка загрузки баннера' });
-    }
-});
-
-// ==================== NITRO ROUTES ====================
-
-// Get Nitro status
-app.get('/api/nitro/status', authenticateToken, (req, res) => {
-    const sql = 'SELECT has_nitro, nitro_expires_at FROM users WHERE id = ?';
-    db.get(sql, [req.user.id], (err, row) => {
-        if (err) {
-            return res.status(500).json({ error: 'Ошибка получения статуса Nitro' });
-        }
-        
-        res.json({
-            has_nitro: row?.has_nitro || false,
-            nitro_expires_at: row?.nitro_expires_at || null,
-            is_active: row?.has_nitro && (!row.nitro_expires_at || new Date(row.nitro_expires_at) > new Date())
-        });
-    });
-});
-
-// Activate Nitro (бесплатно для всех)
-app.post('/api/nitro/activate', authenticateToken, (req, res) => {
-    // Бесплатный Nitro на 100 лет
-    const expiresAt = new Date();
-    expiresAt.setFullYear(expiresAt.getFullYear() + 100);
-    
-    const sql = 'UPDATE users SET has_nitro = 1, nitro_expires_at = ? WHERE id = ?';
-    db.run(sql, [expiresAt.toISOString(), req.user.id], function(err) {
-        if (err) {
-            console.error('Ошибка активации Nitro:', err);
-            return res.status(500).json({ error: 'Ошибка активации Nitro' });
-        }
-        
-        res.json({
-            success: true,
-            has_nitro: true,
-            nitro_expires_at: expiresAt.toISOString(),
-            plan_type: 'free',
-            message: '🎉 Discord Nitro успешно активирован БЕСПЛАТНО!'
-        });
-    });
-});
-
-// Выдать Nitro другому пользователю (только админы)
-app.post('/api/admin/give-nitro', authenticateToken, (req, res) => {
-    const { userId } = req.body;
-    
-    // Проверить что пользователь - админ
-    const checkAdminSql = 'SELECT email FROM users WHERE id = ?';
-    db.get(checkAdminSql, [req.user.id], (err, user) => {
-        if (err || !user || !isAdmin(user.email)) {
-            return res.status(403).json({ error: 'Только админы могут выдавать Nitro' });
-        }
-        
-        // Выдать Nitro
-        const expiresAt = new Date();
-        expiresAt.setFullYear(expiresAt.getFullYear() + 100);
-        
-        const giveNitroSql = 'UPDATE users SET has_nitro = 1, nitro_expires_at = ? WHERE id = ?';
-        db.run(giveNitroSql, [expiresAt.toISOString(), userId], function(giveErr) {
-            if (giveErr) {
-                console.error('Ошибка выдачи Nitro:', giveErr);
-                return res.status(500).json({ error: 'Ошибка выдачи Nitro' });
-            }
-            
-            res.json({
-                success: true,
-                message: `Nitro успешно выдан пользователю ID: ${userId}`
-            });
-        });
-    });
-});
-
-// Получить всех пользователей (для админ панели)
-app.get('/api/admin/users', authenticateToken, async (req, res) => {
-    // Проверить админа
-    const checkAdminSql = 'SELECT email FROM users WHERE id = ?';
-    db.get(checkAdminSql, [req.user.id], async (err, user) => {
-        if (err || !user || !isAdmin(user.email)) {
-            return res.status(403).json({ error: 'Доступ запрещен' });
-        }
-        
-        try {
-            const users = await userDB.getAll();
-            res.json(users);
-        } catch (error) {
-            res.status(500).json({ error: 'Ошибка получения пользователей' });
-        }
-    });
-});
-
-// ==================== SERVER ROUTES ====================
-
-// Create server
-app.post('/api/servers', authenticateToken, async (req, res) => {
-    try {
-        const { name } = req.body;
-        
-        if (!name || name.trim().length < 2) {
-            return res.status(400).json({ error: 'Название сервера должно быть не менее 2 символов' });
-        }
-        
-        const server = await serverDB.create(name.trim(), req.user.id);
-        await serverDB.addMember(server.id, req.user.id);
-        
-        // Create default channels
-        const defaultChannels = [
-            { name: 'general', type: 'text' },
-            { name: 'voice-chat', type: 'voice' }
-        ];
-        
-        for (const channel of defaultChannels) {
-            const sql = 'INSERT INTO channels (name, type, server_id) VALUES (?, ?, ?)';
-            db.run(sql, [channel.name, channel.type, server.id]);
-        }
-        
-        res.status(201).json(server);
-    } catch (error) {
-        console.error('Ошибка создания сервера:', error);
-        res.status(500).json({ error: 'Ошибка создания сервера' });
-    }
-});
-
-// Get user's servers (ИСПРАВЛЕНО!)
-app.get('/api/servers', authenticateToken, async (req, res) => {
-    try {
-        const servers = await serverDB.getUserServers(req.user.id);
-        
-        // Если нет серверов, создать дефолтный
-        if (servers.length === 0) {
-            const defaultServer = await serverDB.create(`${req.user.username}'s Server`, req.user.id);
-            await serverDB.addMember(defaultServer.id, req.user.id);
-            
-            // Создать дефолтные каналы
-            const defaultChannels = [
-                { name: 'general', type: 'text' },
-                { name: 'voice-chat', type: 'voice' }
-            ];
-            
-            for (const channel of defaultChannels) {
-                const sql = 'INSERT INTO channels (name, type, server_id) VALUES (?, ?, ?)';
-                db.run(sql, [channel.name, channel.type, defaultServer.id]);
-            }
-            
-            res.json([defaultServer]);
-        } else {
-            res.json(servers);
-        }
-    } catch (error) {
-        console.error('Ошибка получения серверов:', error);
-        res.status(500).json({ error: 'Ошибка получения серверов' });
-    }
-});
-
-// Get server members
-app.get('/api/servers/:serverId/members', authenticateToken, async (req, res) => {
-    try {
-        const members = await serverDB.getMembers(req.params.serverId);
-        res.json(members);
-    } catch (error) {
-        console.error('Ошибка получения участников:', error);
-        res.status(500).json({ error: 'Ошибка получения участников' });
-    }
-});
-
-// Join server
-app.post('/api/servers/:serverId/join', authenticateToken, async (req, res) => {
-    try {
-        const serverId = req.params.serverId;
-        await serverDB.addMember(serverId, req.user.id);
-        res.json({ success: true });
-    } catch (error) {
-        console.error('Ошибка вступления на сервер:', error);
-        res.status(500).json({ error: 'Ошибка вступления на сервер' });
-    }
-});
-
-// ==================== OTHER ROUTES ====================
 
 // Get all users
 app.get('/api/users', authenticateToken, async (req, res) => {
@@ -503,99 +183,7 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         const users = await userDB.getAll();
         res.json(users);
     } catch (error) {
-        res.status(500).json({ error: 'Ошибка получения пользователей' });
-    }
-});
-
-// Get messages by channel
-app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
-    try {
-        const messages = await messageDB.getByChannel(req.params.channelId);
-        res.json(messages);
-    } catch (error) {
-        res.status(500).json({ error: 'Ошибка получения сообщений' });
-    }
-});
-
-// Get direct messages
-app.get('/api/dm/:userId', authenticateToken, async (req, res) => {
-    try {
-        const messages = await dmDB.getConversation(req.user.id, req.params.userId);
-        res.json(messages);
-    } catch (error) {
-        res.status(500).json({ error: 'Ошибка получения сообщений' });
-    }
-});
-
-// Friend routes
-app.get('/api/friends', authenticateToken, async (req, res) => {
-    try {
-        const friends = await friendDB.getFriends(req.user.id);
-        res.json(friends);
-    } catch (error) {
-        console.error('Ошибка получения друзей:', error);
-        res.status(500).json({ error: 'Ошибка получения друзей' });
-    }
-});
-
-app.get('/api/friends/pending', authenticateToken, async (req, res) => {
-    try {
-        const requests = await friendDB.getPendingRequests(req.user.id);
-        res.json(requests);
-    } catch (error) {
-        console.error('Ошибка получения запросов:', error);
-        res.status(500).json({ error: 'Ошибка получения запросов' });
-    }
-});
-
-app.post('/api/friends/request', authenticateToken, async (req, res) => {
-    try {
-        const { friendId } = req.body;
-        const result = await friendDB.sendRequest(req.user.id, friendId);
-
-        if (result.changes > 0) {
-            const receiverSocket = Array.from(users.values()).find(u => u.id === friendId);
-            if (receiverSocket) {
-                io.to(receiverSocket.socketId).emit('new-friend-request');
-            }
-        }
-
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('Ошибка запроса дружбы:', error);
-        res.status(500).json({ error: 'Ошибка запроса дружбы' });
-    }
-});
-
-app.post('/api/friends/accept', authenticateToken, async (req, res) => {
-    try {
-        const { friendId } = req.body;
-        await friendDB.acceptRequest(req.user.id, friendId);
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('Ошибка принятия запроса:', error);
-        res.status(500).json({ error: 'Ошибка принятия запроса' });
-    }
-});
-
-app.post('/api/friends/reject', authenticateToken, async (req, res) => {
-    try {
-        const { friendId } = req.body;
-        await friendDB.rejectRequest(req.user.id, friendId);
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('Ошибка отклонения запроса:', error);
-        res.status(500).json({ error: 'Ошибка отклонения запроса' });
-    }
-});
-
-app.delete('/api/friends/:friendId', authenticateToken, async (req, res) => {
-    try {
-        await friendDB.removeFriend(req.user.id, req.params.friendId);
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('Ошибка удаления друга:', error);
-        res.status(500).json({ error: 'Ошибка удаления друга' });
+        res.status(500).json({ error: 'Failed to get users' });
     }
 });
 
@@ -603,7 +191,7 @@ app.delete('/api/friends/:friendId', authenticateToken, async (req, res) => {
 app.post('/api/upload', authenticateToken, upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
-            return res.status(400).json({ error: 'Файл не загружен' });
+            return res.status(400).json({ error: 'No file uploaded' });
         }
         
         const { channelId } = req.body;
@@ -624,12 +212,139 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
             size: req.file.size
         });
     } catch (error) {
-        console.error('Ошибка загрузки:', error);
-        res.status(500).json({ error: 'Ошибка загрузки' });
+        console.error('Upload error:', error);
+        res.status(500).json({ error: 'Upload failed' });
     }
 });
 
-// ==================== SOCKET.IO ====================
+// Get messages by channel
+app.get('/api/messages/:channelId', authenticateToken, async (req, res) => {
+    try {
+        const messages = await messageDB.getByChannel(req.params.channelId);
+        res.json(messages);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to get messages' });
+    }
+});
+
+// Get direct messages
+app.get('/api/dm/:userId', authenticateToken, async (req, res) => {
+    try {
+        const messages = await dmDB.getConversation(req.user.id, req.params.userId);
+        res.json(messages);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to get messages' });
+    }
+});
+
+// Server routes
+app.post('/api/servers', authenticateToken, async (req, res) => {
+    try {
+        const { name } = req.body;
+        
+        if (!name || name.trim().length < 2) {
+            return res.status(400).json({ error: 'Server name must be at least 2 characters' });
+        }
+        
+        const server = await serverDB.create(name.trim(), req.user.id);
+        await serverDB.addMember(server.id, req.user.id);
+        
+        res.json(server);
+    } catch (error) {
+        console.error('Create server error:', error);
+        res.status(500).json({ error: 'Failed to create server' });
+    }
+});
+
+app.get('/api/servers', authenticateToken, async (req, res) => {
+    try {
+        const servers = await serverDB.getUserServers(req.user.id);
+        res.json(servers);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to get servers' });
+    }
+});
+
+app.get('/api/servers/:serverId/members', authenticateToken, async (req, res) => {
+    try {
+        const members = await serverDB.getMembers(req.params.serverId);
+        res.json(members);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to get server members' });
+    }
+});
+
+app.get('/api/friends', authenticateToken, async (req, res) => {
+    try {
+        const friends = await friendDB.getFriends(req.user.id);
+        res.json(friends);
+    } catch (error) {
+        console.error('Get friends error:', error);
+        res.status(500).json({ error: 'Failed to get friends' });
+    }
+});
+
+app.get('/api/friends/pending', authenticateToken, async (req, res) => {
+    try {
+        const requests = await friendDB.getPendingRequests(req.user.id);
+        res.json(requests);
+    } catch (error) {
+        console.error('Get pending requests error:', error);
+        res.status(500).json({ error: 'Failed to get pending requests' });
+    }
+});
+
+// Friend request routes
+app.post('/api/friends/request', authenticateToken, async (req, res) => {
+    try {
+        const { friendId } = req.body;
+        const result = await friendDB.sendRequest(req.user.id, friendId);
+
+        if (result.changes > 0) {
+            const receiverSocket = Array.from(users.values()).find(u => u.id === friendId);
+            if (receiverSocket) {
+                io.to(receiverSocket.socketId).emit('new-friend-request');
+            }
+        }
+
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('Friend request error:', error);
+        res.status(500).json({ error: 'Failed to send friend request' });
+    }
+});
+
+app.post('/api/friends/accept', authenticateToken, async (req, res) => {
+    try {
+        const { friendId } = req.body;
+        await friendDB.acceptRequest(req.user.id, friendId);
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('Accept friend request error:', error);
+        res.status(500).json({ error: 'Failed to accept friend request' });
+    }
+});
+
+app.post('/api/friends/reject', authenticateToken, async (req, res) => {
+    try {
+        const { friendId } = req.body;
+        await friendDB.rejectRequest(req.user.id, friendId);
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('Reject friend request error:', error);
+        res.status(500).json({ error: 'Failed to reject friend request' });
+    }
+});
+
+app.delete('/api/friends/:friendId', authenticateToken, async (req, res) => {
+    try {
+        await friendDB.removeFriend(req.user.id, req.params.friendId);
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('Remove friend error:', error);
+        res.status(500).json({ error: 'Failed to remove friend' });
+    }
+});
 
 // Store connected users
 const users = new Map();
@@ -639,11 +354,11 @@ const rooms = new Map();
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
     if (!token) {
-        return next(new Error('Ошибка аутентификации'));
+        return next(new Error('Authentication error'));
     }
     
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
-        if (err) return next(new Error('Ошибка аутентификации'));
+        if (err) return next(new Error('Authentication error'));
         socket.userId = decoded.id;
         socket.userEmail = decoded.email;
         next();
@@ -651,7 +366,7 @@ io.use((socket, next) => {
 });
 
 io.on('connection', async (socket) => {
-    console.log('Пользователь подключился:', socket.userId);
+    console.log('User connected:', socket.userId);
     
     try {
         const user = await userDB.findById(socket.userId);
@@ -666,7 +381,7 @@ io.on('connection', async (socket) => {
         
         io.emit('user-list-update', Array.from(users.values()));
     } catch (error) {
-        console.error('Ошибка загрузки пользователя:', error);
+        console.error('Error loading user:', error);
     }
 
     // User sends message
@@ -690,7 +405,7 @@ io.on('connection', async (socket) => {
                 author: user.username,
                 avatar: user.avatar || user.username.charAt(0).toUpperCase(),
                 text: message.text,
-                timestamp: new Date()
+                timestamp: new Date() // Client will format this
             };
             
             io.emit('new-message', {
@@ -834,10 +549,12 @@ io.on('connection', async (socket) => {
     // Handle call initiation
     socket.on('initiate-call', (data) => {
         const { to, type, from } = data;
-        console.log(`Звонок от ${from.id} к ${to}, тип: ${type}`);
+        console.log(`Call initiated from ${from.id} to ${to}, type: ${type}`);
         
+        // Find receiver socket
         const receiverSocket = Array.from(users.values()).find(u => u.id === to);
         if (receiverSocket) {
+            // Send incoming call notification to receiver
             io.to(receiverSocket.socketId).emit('incoming-call', {
                 from: {
                     id: from.id,
@@ -848,14 +565,16 @@ io.on('connection', async (socket) => {
                 type: type
             });
         } else {
-            socket.emit('call-rejected', { message: 'Пользователь не в сети' });
+            // User is offline
+            socket.emit('call-rejected', { message: 'User is offline' });
         }
     });
 
     socket.on('accept-call', (data) => {
         const { to, from } = data;
-        console.log(`Звонок принят ${from.id}, подключение к ${to}`);
+        console.log(`Call accepted by ${from.id}, connecting to ${to}`);
         
+        // Notify the caller that call was accepted
         io.to(to).emit('call-accepted', {
             from: {
                 id: from.id,
@@ -867,14 +586,16 @@ io.on('connection', async (socket) => {
 
     socket.on('reject-call', (data) => {
         const { to } = data;
-        console.log(`Звонок отклонен, уведомление ${to}`);
+        console.log(`Call rejected, notifying ${to}`);
         
+        // Notify the caller that call was rejected
         io.to(to).emit('call-rejected', {
             from: socket.id,
-            message: 'Звонок отклонен'
+            message: 'Call was declined'
         });
     });
     
+    // Video toggle handler
     socket.on('video-toggle', (data) => {
         const { to, enabled } = data;
         if (to) {
@@ -885,6 +606,7 @@ io.on('connection', async (socket) => {
         }
     });
     
+    // End call
     socket.on('end-call', (data) => {
         const { to } = data;
         if (to) {
@@ -897,12 +619,13 @@ io.on('connection', async (socket) => {
         const user = users.get(socket.id);
         
         if (user) {
-            console.log(`${user.username} отключился`);
+            console.log(`${user.username} disconnected`);
             
+            // Update status in database
             try {
                 await userDB.updateStatus(socket.userId, 'Offline');
             } catch (error) {
-                console.error('Ошибка обновления статуса:', error);
+                console.error('Error updating status:', error);
             }
             
             rooms.forEach((members, roomName) => {
@@ -920,7 +643,6 @@ io.on('connection', async (socket) => {
 
 // Start server
 server.listen(PORT, () => {
-    console.log(`Discord Clone сервер запущен на http://localhost:${PORT}`);
-    console.log(`Откройте http://localhost:${PORT}/login.html в браузере`);
-    console.log(`👑 Админы: ${ADMIN_EMAILS.join(', ')}`);
+    console.log(`Discord Clone server running on http://localhost:${PORT}`);
+    console.log(`Open http://localhost:${PORT}/login.html in your browser`);
 });

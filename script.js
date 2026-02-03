@@ -16,7 +16,6 @@ let token = null;
 let currentView = 'friends';
 let currentServerId = null;
 let currentDMUserId = null;
-
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     token = localStorage.getItem('token');
@@ -52,11 +51,7 @@ function initializeApp() {
     connectToSocketIO();
     requestNotificationPermission();
     loadUserServers();
-    loadNitroStatus();
     showFriendsView();
-    
-    // Добавить кнопки Nitro
-    setTimeout(() => addNitroButtons(), 1000);
 }
 
 function requestNotificationPermission() {
@@ -75,9 +70,7 @@ function updateUserInfo() {
     const userAvatar = document.querySelector('.user-avatar');
     const username = document.querySelector('.username');
     
-    if (userAvatar) {
-        userAvatar.textContent = currentUser.avatar || currentUser.username.charAt(0).toUpperCase();
-    }
+    if (userAvatar) userAvatar.textContent = currentUser.avatar;
     if (username) username.textContent = currentUser.username;
 }
 
@@ -163,12 +156,16 @@ function connectToSocketIO() {
         });
         
         socket.on('video-toggle', (data) => {
+            // Update UI when peer toggles video
             const participantDiv = document.getElementById(`participant-${data.from}`);
             if (participantDiv) {
-                participantDiv.style.opacity = data.enabled ? '1' : '0.7';
+                if (data.enabled) {
+                    participantDiv.style.opacity = '1';
+                } else {
+                    participantDiv.style.opacity = '0.7';
+                }
             }
         });
-        
         socket.on('new-dm', (data) => {
             if (data.senderId === currentDMUserId) {
                 addMessageToUI({
@@ -209,8 +206,10 @@ function connectToSocketIO() {
 
         socket.on('call-accepted', (data) => {
             console.log('Call accepted by:', data.from);
+            // When call is accepted, create peer connection
             document.querySelector('.call-channel-name').textContent = `Connected with ${data.from.username}`;
             
+            // Create peer connection as initiator
             if (!peerConnections[data.from.socketId]) {
                 createPeerConnection(data.from.socketId, true);
             }
@@ -218,6 +217,7 @@ function connectToSocketIO() {
 
         socket.on('call-rejected', (data) => {
             alert('Call was declined');
+            // Close call interface
             const callInterface = document.getElementById('callInterface');
             callInterface.classList.add('hidden');
             if (localStream) {
@@ -228,6 +228,7 @@ function connectToSocketIO() {
         });
         
         socket.on('call-ended', (data) => {
+            // Handle when other party ends the call
             if (peerConnections[data.from]) {
                 peerConnections[data.from].close();
                 delete peerConnections[data.from];
@@ -235,6 +236,7 @@ function connectToSocketIO() {
             const remoteVideo = document.getElementById(`remote-${data.from}`);
             if (remoteVideo) remoteVideo.remove();
             
+            // If no more connections, end the call
             if (Object.keys(peerConnections).length === 0) {
                 leaveVoiceChannel(true);
             }
@@ -323,13 +325,10 @@ function createFriendItem(friend) {
     const div = document.createElement('div');
     div.className = 'friend-item';
     
-    const avatar = friend.avatar || friend.username.charAt(0).toUpperCase();
-    const nitroBadge = friend.has_nitro ? '<span class="nitro-badge">NITRO</span>' : '';
-    
     div.innerHTML = `
-        <div class="friend-avatar">${avatar}</div>
+        <div class="friend-avatar">${friend.avatar || friend.username.charAt(0).toUpperCase()}</div>
         <div class="friend-info">
-            <div class="friend-name">${friend.username}${nitroBadge}</div>
+            <div class="friend-name">${friend.username}</div>
             <div class="friend-status ${friend.status === 'Online' ? '' : 'offline'}">${friend.status}</div>
         </div>
         <div class="friend-actions">
@@ -384,12 +383,10 @@ function displaySearchResults(users) {
         const div = document.createElement('div');
         div.className = 'user-search-item';
         
-        const nitroBadge = user.has_nitro ? '<span class="nitro-badge">NITRO</span>' : '';
-        
         div.innerHTML = `
             <div class="user-avatar">${user.avatar || user.username.charAt(0).toUpperCase()}</div>
             <div class="user-info">
-                <div class="user-name">${user.username}${nitroBadge}</div>
+                <div class="user-name">${user.username}</div>
             </div>
             <button class="add-friend-btn" onclick="sendFriendRequest(${user.id})">Add Friend</button>
         `;
@@ -518,24 +515,30 @@ window.removeFriend = async function(friendId) {
 // Initiate call function
 async function initiateCall(friendId, type) {
     try {
+        // Always request both video and audio, but disable video if it's audio call
         const constraints = { video: true, audio: true };
         
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         
+        // If audio call, disable video track initially
         if (type === 'audio') {
             localStream.getVideoTracks().forEach(track => {
                 track.enabled = false;
             });
         }
         
+        // Show call interface
         const callInterface = document.getElementById('callInterface');
         callInterface.classList.remove('hidden');
         
+        // Update call header
         document.querySelector('.call-channel-name').textContent = `Calling...`;
         
+        // Set local video
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
         
+        // Store call details
         window.currentCallDetails = {
             friendId: friendId,
             type: type,
@@ -543,6 +546,7 @@ async function initiateCall(friendId, type) {
             originalType: type
         };
         
+        // Emit call request via socket
         if (socket && socket.connected) {
             socket.emit('initiate-call', {
                 to: friendId,
@@ -560,6 +564,7 @@ async function initiateCall(friendId, type) {
         isAudioEnabled = true;
         updateCallButtons();
         
+        // Initialize resizable functionality after a short delay
         setTimeout(() => {
             if (typeof initializeResizableVideos === 'function') {
                 initializeResizableVideos();
@@ -583,6 +588,7 @@ function showIncomingCall(caller, type) {
     
     incomingCallDiv.classList.remove('hidden');
     
+    // Set up accept/reject handlers
     const acceptBtn = document.getElementById('acceptCallBtn');
     const rejectBtn = document.getElementById('rejectCallBtn');
     
@@ -596,6 +602,7 @@ function showIncomingCall(caller, type) {
         rejectCall(caller);
     };
     
+    // Auto-reject after 30 seconds
     setTimeout(() => {
         if (!incomingCallDiv.classList.contains('hidden')) {
             incomingCallDiv.classList.add('hidden');
@@ -607,16 +614,19 @@ function showIncomingCall(caller, type) {
 // Accept incoming call
 async function acceptCall(caller, type) {
     try {
+        // Always request both video and audio
         const constraints = { video: true, audio: true };
         
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         
+        // If audio call, disable video track initially
         if (type === 'audio') {
             localStream.getVideoTracks().forEach(track => {
                 track.enabled = false;
             });
         }
         
+        // Show call interface
         const callInterface = document.getElementById('callInterface');
         callInterface.classList.remove('hidden');
         
@@ -625,6 +635,7 @@ async function acceptCall(caller, type) {
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
         
+        // Store call details
         window.currentCallDetails = {
             peerId: caller.socketId,
             type: type,
@@ -648,10 +659,12 @@ async function acceptCall(caller, type) {
         isAudioEnabled = true;
         updateCallButtons();
         
+        // Create peer connection as receiver (not initiator)
         if (!peerConnections[caller.socketId]) {
             createPeerConnection(caller.socketId, false);
         }
         
+        // Initialize resizable functionality after a short delay
         setTimeout(() => {
             if (typeof initializeResizableVideos === 'function') {
                 initializeResizableVideos();
@@ -708,6 +721,7 @@ function showFriendsView() {
     document.querySelectorAll('.server-icon').forEach(icon => icon.classList.remove('active'));
     document.getElementById('friendsBtn').classList.add('active');
     
+    // Hide chat and show friends content
     document.getElementById('chatView').style.display = 'none';
     document.getElementById('friendsView').style.display = 'flex';
 }
@@ -727,37 +741,13 @@ function showServerView(server) {
     switchChannel('general');
 }
 
-// Исправленная функция loadUserServers
 async function loadUserServers() {
     try {
-        console.log('Loading servers...');
         const response = await fetch('/api/servers', {
             headers: { 'Authorization': `Bearer ${token}` }
         });
-        
-        if (response.ok) {
-            servers = await response.json();
-            console.log('Servers loaded:', servers);
-            
-            // Очистить старые сервера
-            document.querySelectorAll('.server-icon[data-server-id]').forEach(icon => {
-                if (!icon.id.includes('friendsBtn') && !icon.id.includes('addServerBtn')) {
-                    icon.remove();
-                }
-            });
-            
-            // Добавить каждый сервер
-            servers.forEach(server => {
-                addServerToUI(server, false);
-            });
-            
-            // Если есть сервера, показать первый
-            if (servers.length > 0 && !currentServerId) {
-                showServerView(servers[0]);
-            }
-        } else {
-            console.error('Failed to load servers:', await response.text());
-        }
+        servers = await response.json();
+        servers.forEach(server => addServerToUI(server, false));
     } catch (error) {
         console.error('Error loading servers:', error);
     }
@@ -808,15 +798,9 @@ function addServerToUI(server, switchTo = false) {
     
     const serverIcon = document.createElement('div');
     serverIcon.className = 'server-icon';
-    serverIcon.textContent = server.icon || server.name.charAt(0).toUpperCase();
+    serverIcon.textContent = server.icon;
     serverIcon.title = server.name;
     serverIcon.setAttribute('data-server-id', server.id);
-    serverIcon.setAttribute('data-server-name', server.name);
-    
-    // Добавляем иконку в массив серверов
-    if (!servers.find(s => s.id === server.id)) {
-        servers.push(server);
-    }
     
     serverIcon.addEventListener('click', () => {
         document.querySelectorAll('.server-icon').forEach(icon => icon.classList.remove('active'));
@@ -824,11 +808,7 @@ function addServerToUI(server, switchTo = false) {
         showServerView(server);
     });
     
-    if (addServerBtn) {
-        serverList.insertBefore(serverIcon, addServerBtn);
-    } else {
-        serverList.appendChild(serverIcon);
-    }
+    serverList.insertBefore(serverIcon, addServerBtn);
     
     if (switchTo) {
         serverIcon.click();
@@ -869,6 +849,7 @@ async function loadChannelMessages(channelName) {
     const messagesContainer = document.getElementById('messagesContainer');
     messagesContainer.innerHTML = '';
 
+    // For now, we'll use a hardcoded channel ID. This needs to be improved.
     const channelId = channelName === 'general' ? 1 : 2;
 
     try {
@@ -1164,6 +1145,7 @@ function initializeUserControls() {
         deafenBtn.querySelector('.icon-normal').style.display = isDeafened ? 'none' : 'block';
         deafenBtn.querySelector('.icon-slashed').style.display = isDeafened ? 'block' : 'none';
         
+        // When deafened, also mute microphone
         if (isDeafened) {
             if (!isMuted) {
                 isMuted = true;
@@ -1171,15 +1153,18 @@ function initializeUserControls() {
                 muteBtn.querySelector('.icon-slashed').style.display = 'block';
             }
             
+            // Mute all remote audio
             document.querySelectorAll('video[id^="remote-"]').forEach(video => {
                 video.volume = 0;
             });
         } else {
+            // Unmute remote audio
             document.querySelectorAll('video[id^="remote-"]').forEach(video => {
                 video.volume = 1;
             });
         }
 
+        // Update local stream audio tracks
         if (localStream) {
             localStream.getAudioTracks().forEach(track => {
                 track.enabled = !isMuted;
@@ -1198,7 +1183,7 @@ function initializeUserControls() {
     });
 }
 
-// Voice channel functions
+// Voice channel functions - call persists when switching views
 async function joinVoiceChannel(channelName) {
     if (inCall) {
         const callInterface = document.getElementById('callInterface');
@@ -1222,6 +1207,7 @@ async function joinVoiceChannel(channelName) {
     try {
         await initializeMedia();
         
+        // Connect to the socket for voice
         if (socket && socket.connected) {
             socket.emit('join-voice-channel', { channelName, userId: currentUser.id });
         }
@@ -1229,12 +1215,13 @@ async function joinVoiceChannel(channelName) {
     } catch (error) {
         console.error('Error initializing media:', error);
         alert('Error accessing camera/microphone. Please grant permissions.');
-        leaveVoiceChannel(true);
+        leaveVoiceChannel(true); // Force leave
     }
 }
 
 async function initializeMedia() {
     try {
+        // Better audio constraints for clear voice
         const constraints = {
             video: {
                 width: { ideal: 1280 },
@@ -1255,8 +1242,12 @@ async function initializeMedia() {
         const localVideo = document.getElementById('localVideo');
         localVideo.srcObject = localStream;
         
+        // Log audio track status
         const audioTracks = localStream.getAudioTracks();
         console.log('Local audio tracks:', audioTracks.length);
+        audioTracks.forEach(track => {
+            console.log(`Audio track: ${track.label}, enabled: ${track.enabled}, readyState: ${track.readyState}`);
+        });
         
         if (isMuted || isDeafened) {
             audioTracks.forEach(track => {
@@ -1315,14 +1306,16 @@ function initializeCallControls() {
     const toggleScreenBtn = document.getElementById('toggleScreenBtn');
     
     closeCallBtn.addEventListener('click', () => {
+        // End call for both voice channels and direct calls
         if (window.currentCallDetails) {
+            // End a direct call
             Object.keys(peerConnections).forEach(socketId => {
                 if (socket && socket.connected) {
                     socket.emit('end-call', { to: socketId });
                 }
             });
         }
-        leaveVoiceChannel(true);
+        leaveVoiceChannel(true); // Force leave on button click
     });
     
     toggleVideoBtn.addEventListener('click', () => {
@@ -1346,6 +1339,7 @@ function toggleVideo() {
         track.enabled = isVideoEnabled;
     });
     
+    // Notify peer about video state change
     Object.keys(peerConnections).forEach(socketId => {
         if (socket && socket.connected) {
             socket.emit('video-toggle', {
@@ -1379,8 +1373,10 @@ function toggleAudio() {
 
 async function toggleScreenShare() {
     if (screenStream) {
+        // Stop screen sharing
         screenStream.getTracks().forEach(track => track.stop());
         
+        // Replace screen track with camera track in all peer connections
         const videoTrack = localStream.getVideoTracks()[0];
         Object.values(peerConnections).forEach(pc => {
             const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
@@ -1397,6 +1393,7 @@ async function toggleScreenShare() {
         updateCallButtons();
     } else {
         try {
+            // Start screen sharing
             screenStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
                     cursor: 'always',
@@ -1412,6 +1409,7 @@ async function toggleScreenShare() {
             
             const screenTrack = screenStream.getVideoTracks()[0];
             
+            // Replace video track in all peer connections
             Object.values(peerConnections).forEach(pc => {
                 const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
                 if (sender) {
@@ -1419,6 +1417,7 @@ async function toggleScreenShare() {
                 }
             });
             
+            // Show screen share in local video
             const localVideo = document.getElementById('localVideo');
             const mixedStream = new MediaStream([
                 screenTrack,
@@ -1426,8 +1425,9 @@ async function toggleScreenShare() {
             ]);
             localVideo.srcObject = mixedStream;
             
+            // Handle screen share ending
             screenTrack.addEventListener('ended', () => {
-                toggleScreenShare();
+                toggleScreenShare(); // This will stop screen sharing
             });
             
             updateCallButtons();
@@ -1470,7 +1470,7 @@ function initializeDraggableCallWindow() {
        isDragging = true;
        offsetX = e.clientX - callInterface.offsetLeft;
        offsetY = e.clientY - callInterface.offsetTop;
-       callInterface.style.transition = 'none';
+       callInterface.style.transition = 'none'; // Disable transition during drag
    });
 
    document.addEventListener('mousemove', (e) => {
@@ -1478,6 +1478,7 @@ function initializeDraggableCallWindow() {
            let newX = e.clientX - offsetX;
            let newY = e.clientY - offsetY;
 
+           // Constrain within viewport
            const maxX = window.innerWidth - callInterface.offsetWidth;
            const maxY = window.innerHeight - callInterface.offsetHeight;
 
@@ -1492,16 +1493,18 @@ function initializeDraggableCallWindow() {
    document.addEventListener('mouseup', () => {
        if (isDragging) {
            isDragging = false;
-           callInterface.style.transition = 'all 0.3s ease';
+           callInterface.style.transition = 'all 0.3s ease'; // Re-enable transition
        }
    });
 }
 
 function getChannelIdByName(name) {
+   // This is a temporary solution. A better approach would be to have a proper mapping.
    return name === 'general' ? 1 : 2;
 }
 
 function getChannelNameById(id) {
+   // This is a temporary solution. A better approach would be to have a proper mapping.
    return id === 1 ? 'general' : 'random';
 }
 
@@ -1588,17 +1591,20 @@ function createPeerConnection(remoteSocketId, isInitiator) {
 
     peerConnections[remoteSocketId] = pc;
 
+    // Add local stream tracks with better error handling
     if (localStream) {
         const audioTracks = localStream.getAudioTracks();
         const videoTracks = localStream.getVideoTracks();
         
         console.log(`Adding tracks - Audio: ${audioTracks.length}, Video: ${videoTracks.length}`);
         
+        // Add audio tracks first (priority for voice calls)
         audioTracks.forEach(track => {
             console.log(`Adding audio track: ${track.label}, enabled: ${track.enabled}`);
             pc.addTrack(track, localStream);
         });
         
+        // Then add video tracks
         videoTracks.forEach(track => {
             console.log(`Adding video track: ${track.label}, enabled: ${track.enabled}`);
             pc.addTrack(track, localStream);
@@ -1607,6 +1613,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
         console.error('No local stream available');
     }
 
+    // Handle ICE candidates
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             console.log('Sending ICE candidate');
@@ -1617,10 +1624,12 @@ function createPeerConnection(remoteSocketId, isInitiator) {
         }
     };
     
+    // Handle connection state changes
     pc.oniceconnectionstatechange = () => {
         console.log(`ICE connection state: ${pc.iceConnectionState}`);
         if (pc.iceConnectionState === 'failed') {
             console.error('ICE connection failed');
+            // Try to restart ICE
             pc.restartIce();
         }
         if (pc.iceConnectionState === 'connected') {
@@ -1628,6 +1637,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
         }
     };
 
+    // Handle incoming remote stream
     pc.ontrack = (event) => {
         console.log('Received remote track:', event.track.kind, 'Stream ID:', event.streams[0]?.id);
         
@@ -1645,7 +1655,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
             remoteVideo.id = `remote-${remoteSocketId}`;
             remoteVideo.autoplay = true;
             remoteVideo.playsInline = true;
-            remoteVideo.volume = isDeafened ? 0 : 1;
+            remoteVideo.volume = isDeafened ? 0 : 1; // Respect deafened state
             
             const participantName = document.createElement('div');
             participantName.className = 'participant-name';
@@ -1656,14 +1666,17 @@ function createPeerConnection(remoteSocketId, isInitiator) {
             remoteParticipants.appendChild(participantDiv);
         }
         
+        // Set the stream to the video element
         if (event.streams && event.streams[0]) {
             console.log('Setting remote stream to video element');
             remoteVideo = document.getElementById(`remote-${remoteSocketId}`);
             if (remoteVideo) {
                 remoteVideo.srcObject = event.streams[0];
                 
+                // Ensure audio is playing
                 remoteVideo.play().catch(e => {
                     console.error('Error playing remote video:', e);
+                    // Try to play after user interaction
                     document.addEventListener('click', () => {
                         remoteVideo.play().catch(err => console.error('Still cannot play:', err));
                     }, { once: true });
@@ -1671,6 +1684,170 @@ function createPeerConnection(remoteSocketId, isInitiator) {
             }
         }
         
+        // Initialize resizable videos
+        function initializeResizableVideos() {
+            const callInterface = document.getElementById('callInterface');
+            const participants = callInterface.querySelectorAll('.participant');
+            
+            participants.forEach(participant => {
+                makeResizable(participant);
+            });
+            
+            // Make call interface resizable too
+            makeInterfaceResizable(callInterface);
+        }
+        
+        // Make individual video resizable
+        function makeResizable(element) {
+            // Add resize handle
+            const resizeHandle = document.createElement('div');
+            resizeHandle.className = 'resize-handle';
+            resizeHandle.innerHTML = '↘';
+            resizeHandle.style.cssText = `
+                position: absolute;
+                bottom: 5px;
+                right: 5px;
+                width: 20px;
+                height: 20px;
+                background: rgba(255,255,255,0.3);
+                cursor: nwse-resize;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 3px;
+                font-size: 12px;
+                color: white;
+                user-select: none;
+            `;
+            
+            // Add video size controls
+            const sizeControls = document.createElement('div');
+            sizeControls.className = 'video-size-controls';
+            sizeControls.innerHTML = `
+                <button class="size-control-btn minimize-btn" title="Minimize">_</button>
+                <button class="size-control-btn maximize-btn" title="Maximize">□</button>
+                <button class="size-control-btn fullscreen-btn" title="Fullscreen">⛶</button>
+            `;
+            
+            if (!element.querySelector('.resize-handle')) {
+                element.appendChild(resizeHandle);
+                element.appendChild(sizeControls);
+                element.style.resize = 'both';
+                element.style.overflow = 'auto';
+                element.style.minWidth = '150px';
+                element.style.minHeight = '100px';
+                element.style.maxWidth = '90vw';
+                element.style.maxHeight = '90vh';
+                element.setAttribute('data-resizable', 'true');
+                
+                // Add double-click for fullscreen
+                element.addEventListener('dblclick', function(e) {
+                    if (!e.target.closest('.video-size-controls')) {
+                        toggleVideoFullscreen(element);
+                    }
+                });
+                
+                // Size control buttons
+                const minimizeBtn = sizeControls.querySelector('.minimize-btn');
+                const maximizeBtn = sizeControls.querySelector('.maximize-btn');
+                const fullscreenBtn = sizeControls.querySelector('.fullscreen-btn');
+                
+                minimizeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    element.classList.toggle('minimized');
+                    element.classList.remove('maximized');
+                });
+                
+                maximizeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    element.classList.toggle('maximized');
+                    element.classList.remove('minimized');
+                });
+                
+                fullscreenBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const video = element.querySelector('video');
+                    if (video && video.requestFullscreen) {
+                        video.requestFullscreen();
+                    }
+                });
+            }
+        }
+        
+        // Toggle video fullscreen
+        function toggleVideoFullscreen(element) {
+            element.classList.toggle('maximized');
+            if (element.classList.contains('maximized')) {
+                element.classList.remove('minimized');
+            }
+        }
+        
+        // Make call interface resizable
+        function makeInterfaceResizable(callInterface) {
+            const resizeHandle = document.createElement('div');
+            resizeHandle.className = 'interface-resize-handle';
+            resizeHandle.style.cssText = `
+                position: absolute;
+                bottom: 0;
+                right: 0;
+                width: 15px;
+                height: 15px;
+                cursor: nwse-resize;
+                background: linear-gradient(135deg, transparent 50%, #5865f2 50%);
+                border-bottom-right-radius: 12px;
+            `;
+            
+            if (!callInterface.querySelector('.interface-resize-handle')) {
+                callInterface.appendChild(resizeHandle);
+                
+                let isResizing = false;
+                let startWidth = 0;
+                let startHeight = 0;
+                let startX = 0;
+                let startY = 0;
+                
+                resizeHandle.addEventListener('mousedown', (e) => {
+                    isResizing = true;
+                    startWidth = parseInt(document.defaultView.getComputedStyle(callInterface).width, 10);
+                    startHeight = parseInt(document.defaultView.getComputedStyle(callInterface).height, 10);
+                    startX = e.clientX;
+                    startY = e.clientY;
+                    e.preventDefault();
+                });
+                
+                document.addEventListener('mousemove', (e) => {
+                    if (!isResizing) return;
+                    
+                    const newWidth = startWidth + e.clientX - startX;
+                    const newHeight = startHeight + e.clientY - startY;
+                    
+                    if (newWidth > 300 && newWidth < window.innerWidth * 0.9) {
+                        callInterface.style.width = newWidth + 'px';
+                    }
+                    if (newHeight > 200 && newHeight < window.innerHeight * 0.9) {
+                        callInterface.style.height = newHeight + 'px';
+                    }
+                });
+                
+                document.addEventListener('mouseup', () => {
+                    isResizing = false;
+                });
+            }
+        }
+        
+        // Update resizable functionality when new participants join
+        const originalOntrack = RTCPeerConnection.prototype.ontrack;
+        window.observeNewParticipants = function() {
+            setTimeout(() => {
+                const participants = document.querySelectorAll('.participant:not([data-resizable])');
+                participants.forEach(participant => {
+                    participant.setAttribute('data-resizable', 'true');
+                    makeResizable(participant);
+                });
+            }, 500);
+        };
+        
+        // Make the new participant video resizable after a short delay
         setTimeout(() => {
             if (typeof makeResizable === 'function' && participantDiv) {
                 makeResizable(participantDiv);
@@ -1678,6 +1855,7 @@ function createPeerConnection(remoteSocketId, isInitiator) {
         }, 100);
     };
 
+    // Create offer if initiator with modern constraints
     if (isInitiator) {
         pc.createOffer()
         .then(offer => {
@@ -1709,6 +1887,7 @@ function initializeResizableVideos() {
         makeResizable(participant);
     });
     
+    // Make call interface resizable too
     makeInterfaceResizable(callInterface);
 }
 
@@ -1716,6 +1895,7 @@ function initializeResizableVideos() {
 function makeResizable(element) {
     if (!element || element.hasAttribute('data-resizable')) return;
     
+    // Add resize handle
     const resizeHandle = document.createElement('div');
     resizeHandle.className = 'resize-handle';
     resizeHandle.innerHTML = '↘';
@@ -1737,6 +1917,7 @@ function makeResizable(element) {
         z-index: 10;
     `;
     
+    // Add video size controls
     const sizeControls = document.createElement('div');
     sizeControls.className = 'video-size-controls';
     sizeControls.innerHTML = `
@@ -1765,6 +1946,7 @@ function makeResizable(element) {
     element.style.maxHeight = '90vh';
     element.setAttribute('data-resizable', 'true');
     
+    // Show controls on hover
     element.addEventListener('mouseenter', () => {
         sizeControls.style.opacity = '1';
     });
@@ -1773,12 +1955,14 @@ function makeResizable(element) {
         sizeControls.style.opacity = '0';
     });
     
+    // Add double-click for fullscreen
     element.addEventListener('dblclick', function(e) {
         if (!e.target.closest('.video-size-controls')) {
             toggleVideoFullscreen(element);
         }
     });
     
+    // Size control buttons
     const minimizeBtn = sizeControls.querySelector('.minimize-btn');
     const maximizeBtn = sizeControls.querySelector('.maximize-btn');
     const fullscreenBtn = sizeControls.querySelector('.fullscreen-btn');
@@ -1871,260 +2055,3 @@ function makeInterfaceResizable(callInterface) {
         isResizing = false;
     });
 }
-
-// ==================== NITRO & PROFILE FUNCTIONS ====================
-
-// Загрузить статус Nitro
-async function loadNitroStatus() {
-    try {
-        const response = await fetch('/api/nitro/status', {
-            headers: { 'Authorization': `Bearer ${token}` }
-        });
-        
-        if (response.ok) {
-            const nitro = await response.json();
-            currentUser.has_nitro = nitro.has_nitro;
-            currentUser.nitro_expires_at = nitro.nitro_expires_at;
-            updateNitroUI();
-        }
-    } catch (error) {
-        console.error('Error loading Nitro status:', error);
-    }
-}
-
-// Обновить UI с Nitro
-function updateNitroUI() {
-    const userAvatar = document.querySelector('.user-avatar');
-    const userPanel = document.querySelector('.user-panel');
-    
-    if (currentUser.has_nitro && userAvatar) {
-        userAvatar.classList.add('nitro-user');
-        userAvatar.title = '🌟 Discord Nitro Subscriber';
-    }
-    
-    if (currentUser.banner_url && userPanel) {
-        userPanel.style.backgroundImage = `url(${currentUser.banner_url})`;
-        userPanel.style.backgroundSize = 'cover';
-        userPanel.style.backgroundPosition = 'center';
-        userPanel.style.minHeight = '80px';
-    }
-}
-
-// Бесплатная активация Nitro
-async function activateFreeNitro() {
-    try {
-        const response = await fetch('/api/nitro/activate', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            }
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            alert(`🎉 ${result.message}`);
-            
-            currentUser.has_nitro = true;
-            currentUser.nitro_expires_at = result.nitro_expires_at;
-            localStorage.setItem('currentUser', JSON.stringify(currentUser));
-            
-            updateNitroUI();
-            addNitroButtons();
-        }
-    } catch (error) {
-        console.error('Error activating Nitro:', error);
-        alert('Ошибка активации Nitro');
-    }
-}
-
-// Выдать Nitro другому пользователю (для админов)
-async function giveNitroToUser(userId) {
-    if (!currentUser.is_admin) {
-        alert('Только админы могут выдавать Nitro!');
-        return;
-    }
-    
-    try {
-        const response = await fetch('/api/admin/give-nitro', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ userId: userId })
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            alert(`✅ ${result.message}`);
-        } else {
-            const error = await response.json();
-            alert(`❌ ${error.error}`);
-        }
-    } catch (error) {
-        console.error('Error giving Nitro:', error);
-    }
-}
-
-// Загрузить аватарку (бесплатно)
-async function uploadAvatar() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    
-    input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        if (file.size > 100 * 1024 * 1024) {
-            alert('Файл слишком большой! Максимум 100MB');
-            return;
-        }
-        
-        const formData = new FormData();
-        formData.append('avatar', file);
-        
-        try {
-            const response = await fetch('/api/upload-avatar', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
-                body: formData
-            });
-            
-            if (response.ok) {
-                const result = await response.json();
-                alert('✅ Аватарка обновлена!');
-                
-                currentUser.avatar = result.avatarUrl;
-                localStorage.setItem('currentUser', JSON.stringify(currentUser));
-                updateUserInfo();
-                updateNitroUI();
-            } else {
-                const error = await response.json();
-                alert(`❌ ${error.error}`);
-            }
-        } catch (error) {
-            console.error('Error uploading avatar:', error);
-            alert('Ошибка загрузки аватарки');
-        }
-    };
-    
-    input.click();
-}
-
-// Загрузить баннер (бесплатно)
-async function uploadBanner() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    
-    input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        if (file.size > 100 * 1024 * 1024) {
-            alert('Файл слишком большой! Максимум 100MB');
-            return;
-        }
-        
-        const formData = new FormData();
-        formData.append('banner', file);
-        
-        try {
-            const response = await fetch('/api/upload-banner', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
-                body: formData
-            });
-            
-            if (response.ok) {
-                const result = await response.json();
-                alert('✅ Баннер обновлен!');
-                
-                currentUser.banner_url = result.bannerUrl;
-                localStorage.setItem('currentUser', JSON.stringify(currentUser));
-                updateNitroUI();
-            } else {
-                const error = await response.json();
-                alert(`❌ ${error.error}`);
-            }
-        } catch (error) {
-            console.error('Error uploading banner:', error);
-            alert('Ошибка загрузки баннера');
-        }
-    };
-    
-    input.click();
-}
-
-// Добавить кнопки Nitro в интерфейс
-function addNitroButtons() {
-    const userPanel = document.querySelector('.user-panel');
-    if (!userPanel) return;
-    
-    // Очистить старые кнопки
-    const oldBtns = userPanel.querySelectorAll('.nitro-control-btn');
-    oldBtns.forEach(btn => btn.remove());
-    
-    // Создать контейнер для кнопок
-    const btnContainer = document.createElement('div');
-    btnContainer.className = 'nitro-controls';
-    btnContainer.style.cssText = `
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-        padding: 10px;
-        background: rgba(0,0,0,0.3);
-        border-radius: 5px;
-        margin-top: 5px;
-    `;
-    
-    // Кнопка аватарки
-    const avatarBtn = document.createElement('button');
-    avatarBtn.className = 'nitro-control-btn';
-    avatarBtn.textContent = '🖼️ Сменить аватарку';
-    avatarBtn.onclick = uploadAvatar;
-    
-    // Кнопка баннера
-    const bannerBtn = document.createElement('button');
-    bannerBtn.className = 'nitro-control-btn';
-    bannerBtn.textContent = '🎨 Сменить баннер';
-    bannerBtn.onclick = uploadBanner;
-    
-    // Кнопка Nitro
-    const nitroBtn = document.createElement('button');
-    nitroBtn.className = 'nitro-control-btn';
-    if (currentUser.has_nitro) {
-        nitroBtn.textContent = '🌟 Nitro Active';
-        nitroBtn.style.background = '#5865f2';
-    } else {
-        nitroBtn.textContent = '✨ Получить Nitro БЕСПЛАТНО';
-        nitroBtn.style.background = '#ff73fa';
-    }
-    nitroBtn.onclick = activateFreeNitro;
-    
-    // Кнопка выдачи Nitro (только для админов)
-    if (currentUser.is_admin) {
-        const giveNitroBtn = document.createElement('button');
-        giveNitroBtn.className = 'nitro-control-btn';
-        giveNitroBtn.textContent = '👑 Выдать Nitro';
-        giveNitroBtn.style.background = '#ff0000';
-        giveNitroBtn.onclick = () => {
-            const userId = prompt('Введите ID пользователя для выдачи Nitro:');
-            if (userId) giveNitroToUser(parseInt(userId));
-        };
-        btnContainer.appendChild(giveNitroBtn);
-    }
-    
-    btnContainer.appendChild(avatarBtn);
-    btnContainer.appendChild(bannerBtn);
-    btnContainer.appendChild(nitroBtn);
-    userPanel.appendChild(btnContainer);
-}
-
-// Сделать функции глобальными
-window.uploadAvatar = uploadAvatar;
-window.uploadBanner = uploadBanner;
-window.activateFreeNitro = activateFreeNitro;
-window.giveNitroToUser = giveNitroToUser;
