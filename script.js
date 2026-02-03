@@ -835,13 +835,28 @@ function initializeChannels() {
 function switchChannel(channelName) {
     currentChannel = channelName;
     
+    // Убираем активный класс у всех каналов
     document.querySelectorAll('.text-channel').forEach(ch => ch.classList.remove('active'));
+    
+    // Добавляем активный класс выбранному каналу
     const channelEl = document.querySelector(`[data-channel="${channelName}"]`);
     if (channelEl) channelEl.classList.add('active');
     
-    document.getElementById('currentChannelName').textContent = channelName;
-    document.getElementById('messageInput').placeholder = `Message #${channelName}`;
+    // Проверяем существование элемента перед изменением
+    const currentChannelElement = document.getElementById('currentChannelName');
+    if (currentChannelElement) {
+        currentChannelElement.textContent = channelName;
+    } else {
+        console.warn('Element #currentChannelName not found');
+    }
     
+    // Проверяем существование поля ввода
+    const messageInput = document.getElementById('messageInput');
+    if (messageInput) {
+        messageInput.placeholder = `Message #${channelName}`;
+    }
+    
+    // Загружаем сообщения
     loadChannelMessages(channelName);
 }
 
